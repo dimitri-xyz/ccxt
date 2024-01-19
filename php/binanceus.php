@@ -6,14 +6,16 @@ namespace ccxt;
 // https://github.com/ccxt/ccxt/blob/master/CONTRIBUTING.md#how-to-contribute-code
 
 use Exception; // a common import
+use ccxt\abstract\binanceus as binance;
 
 class binanceus extends binance {
 
     public function describe() {
-        return $this->deep_extend(parent::describe (), array(
+        return $this->deep_extend(parent::describe(), array(
             'id' => 'binanceus',
             'name' => 'Binance US',
             'countries' => array( 'US' ), // US
+            'rateLimit' => 50, // 1200 req per min
             'certified' => false,
             'pro' => true,
             'urls' => array(
@@ -34,13 +36,59 @@ class binanceus extends binance {
                 'trading' => array(
                     'tierBased' => true,
                     'percentage' => true,
-                    'taker' => $this->parse_number('0.001'), // 0.1% trading fee, zero fees for all trading pairs before November 1
-                    'maker' => $this->parse_number('0.001'), // 0.1% trading fee, zero fees for all trading pairs before November 1
+                    'taker' => $this->parse_number('0.001'), // 0.1% trading fee, zero fees for all trading pairs before November 1.
+                    'maker' => $this->parse_number('0.001'), // 0.1% trading fee, zero fees for all trading pairs before November 1.
                 ),
             ),
             'options' => array(
-                'fetchCurrencies' => false,
+                'fetchMarkets' => array( 'spot' ),
+                'defaultType' => 'spot',
                 'quoteOrderQty' => false,
+            ),
+            'has' => array(
+                'CORS' => null,
+                'spot' => true,
+                'margin' => false,
+                'swap' => false,
+                'future' => null,
+                'option' => false,
+                'addMargin' => false,
+                'closeAllPositions' => false,
+                'closePosition' => false,
+                'createReduceOnlyOrder' => false,
+                'fetchBorrowInterest' => false,
+                'fetchBorrowRate' => false,
+                'fetchBorrowRateHistories' => false,
+                'fetchBorrowRateHistory' => false,
+                'fetchBorrowRates' => false,
+                'fetchBorrowRatesPerSymbol' => false,
+                'fetchFundingHistory' => false,
+                'fetchFundingRate' => false,
+                'fetchFundingRateHistory' => false,
+                'fetchFundingRates' => false,
+                'fetchIndexOHLCV' => false,
+                'fetchIsolatedPositions' => false,
+                'fetchLeverage' => false,
+                'fetchLeverageTiers' => false,
+                'fetchMarketLeverageTiers' => false,
+                'fetchMarkOHLCV' => false,
+                'fetchOpenInterestHistory' => false,
+                'fetchPosition' => false,
+                'fetchPositions' => false,
+                'fetchPositionsRisk' => false,
+                'fetchPremiumIndexOHLCV' => false,
+                'reduceMargin' => false,
+                'setLeverage' => false,
+                'setMargin' => false,
+                'setMarginMode' => false,
+                'setPositionMode' => false,
+            ),
+            'api' => array(
+                'public' => array(
+                    'get' => array(
+                        'ticker/price' => array( 'cost' => 1, 'noSymbol' => 2 ),
+                    ),
+                ),
             ),
         ));
     }

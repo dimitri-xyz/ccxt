@@ -6,13 +6,12 @@ namespace ccxt;
 // https://github.com/ccxt/ccxt/blob/master/CONTRIBUTING.md#how-to-contribute-code
 
 use Exception; // a common import
-use \ccxt\ExchangeError;
-use \ccxt\InvalidOrder;
+use ccxt\abstract\timex as Exchange;
 
 class timex extends Exchange {
 
     public function describe() {
-        return $this->deep_extend(parent::describe (), array(
+        return $this->deep_extend(parent::describe(), array(
             'id' => 'timex',
             'name' => 'TimeX',
             'countries' => array( 'AU' ),
@@ -35,18 +34,21 @@ class timex extends Exchange {
                 'createStopOrder' => false,
                 'editOrder' => true,
                 'fetchBalance' => true,
-                'fetchBorrowRate' => false,
                 'fetchBorrowRateHistories' => false,
                 'fetchBorrowRateHistory' => false,
-                'fetchBorrowRates' => false,
-                'fetchBorrowRatesPerSymbol' => false,
                 'fetchClosedOrders' => true,
+                'fetchCrossBorrowRate' => false,
+                'fetchCrossBorrowRates' => false,
                 'fetchCurrencies' => true,
+                'fetchDeposit' => false,
+                'fetchDeposits' => true,
                 'fetchFundingHistory' => false,
                 'fetchFundingRate' => false,
                 'fetchFundingRateHistory' => false,
                 'fetchFundingRates' => false,
                 'fetchIndexOHLCV' => false,
+                'fetchIsolatedBorrowRate' => false,
+                'fetchIsolatedBorrowRates' => false,
                 'fetchLeverage' => false,
                 'fetchLeverageTiers' => false,
                 'fetchMarginMode' => false,
@@ -67,6 +69,8 @@ class timex extends Exchange {
                 'fetchTickers' => true,
                 'fetchTrades' => true,
                 'fetchTradingFee' => true, // maker fee only
+                'fetchWithdrawal' => false,
+                'fetchWithdrawals' => true,
                 'reduceMargin' => false,
                 'setLeverage' => false,
                 'setMarginMode' => false,
@@ -87,17 +91,30 @@ class timex extends Exchange {
             ),
             'urls' => array(
                 'logo' => 'https://user-images.githubusercontent.com/1294454/70423869-6839ab00-1a7f-11ea-8f94-13ae72c31115.jpg',
-                'api' => 'https://plasma-relay-backend.timex.io',
+                'api' => array(
+                    'rest' => 'https://plasma-relay-backend.timex.io',
+                ),
                 'www' => 'https://timex.io',
                 'doc' => 'https://docs.timex.io',
                 'referral' => 'https://timex.io/?refcode=1x27vNkTbP1uwkCck',
             ),
             'api' => array(
+                'addressbook' => array(
+                    'get' => array(
+                        'me',
+                    ),
+                    'post' => array(
+                        '',
+                        'id/{id}',
+                        'id/{id}/remove',
+                    ),
+                ),
                 'custody' => array(
                     'get' => array(
                         'credentials', // Get api key for address
                         'credentials/h/{hash}', // Get api key by hash
                         'credentials/k/{key}', // Get api key by key
+                        'credentials/me',
                         'credentials/me/address', // Get api key by hash
                         'deposit-addresses', // Get deposit addresses list
                         'deposit-addresses/h/{hash}', // Get deposit address by hash
@@ -125,6 +142,13 @@ class timex extends Exchange {
                         's/{symbol}/remove/prepare', // Prepare remove currency by symbol
                         's/{symbol}/update/perform', // Prepare update currency by symbol
                         's/{symbol}/update/prepare', // Prepare update currency by symbol
+                    ),
+                ),
+                'manager' => array(
+                    'get' => array(
+                        'deposits',
+                        'transfers',
+                        'withdrawals',
                     ),
                 ),
                 'markets' => array(
@@ -242,8 +266,8 @@ class timex extends Exchange {
     public function fetch_markets($params = array ()) {
         /**
          * retrieves data on all markets for timex
-         * @param {dict} $params extra parameters specific to the exchange api endpoint
-         * @return {[dict]} an array of objects representing market data
+         * @param {array} [$params] extra parameters specific to the exchange API endpoint
+         * @return {array[]} an array of objects representing market data
          */
         $response = $this->publicGetMarkets ($params);
         //
@@ -267,18 +291,14 @@ class timex extends Exchange {
         //         }
         //     )
         //
-        $result = array();
-        for ($i = 0; $i < count($response); $i++) {
-            $result[] = $this->parse_market($response[$i]);
-        }
-        return $result;
+        return $this->parse_markets($response);
     }
 
     public function fetch_currencies($params = array ()) {
         /**
          * fetches all available currencies on an exchange
-         * @param {dict} $params extra parameters specific to the timex api endpoint
-         * @return {dict} an associative dictionary of currencies
+         * @param {array} [$params] extra parameters specific to the exchange API endpoint
+         * @return {array} an associative dictionary of currencies
          */
         $response = $this->publicGetCurrencies ($params);
         //
@@ -314,12 +334,131 @@ class timex extends Exchange {
         return $this->index_by($result, 'code');
     }
 
-    public function fetch_tickers($symbols = null, $params = array ()) {
+    public function fetch_deposits(?string $code = null, ?int $since = null, ?int $limit = null, $params = array ()): array {
         /**
-         * fetches price tickers for multiple markets, statistical calculations with the information calculated over the past 24 hours each market
-         * @param {[str]|null} $symbols unified $symbols of the markets to fetch the ticker for, all market tickers are returned if not assigned
-         * @param {dict} $params extra parameters specific to the timex api endpoint
-         * @return {dict} an array of {@link https://docs.ccxt.com/en/latest/manual.html#ticker-structure ticker structures}
+         * fetch all deposits made to an account
+         * @param {string} $code unified $currency $code
+         * @param {int} [$since] the earliest time in ms to fetch deposits for
+         * @param {int} [$limit] the maximum number of deposits structures to retrieve
+         * @param {array} [$params] extra parameters specific to the exchange API endpoint
+         * @return {array[]} a list of ~@link https://docs.ccxt.com/#/?id=transaction-structure transaction structures~
+         */
+        $address = $this->safe_string($params, 'address');
+        $params = $this->omit($params, 'address');
+        if ($address === null) {
+            throw new ArgumentsRequired($this->id . ' fetchDeposits() requires an $address parameter');
+        }
+        $request = array(
+            'address' => $address,
+        );
+        $response = $this->managerGetDeposits (array_merge($request, $params));
+        //
+        //     array(
+        //         {
+        //             "from" => "0x1134cc86b45039cc211c6d1d2e4b3c77f60207ed",
+        //             "timestamp" => "2022-01-01T00:00:00Z",
+        //             "to" => "0x1134cc86b45039cc211c6d1d2e4b3c77f60207ed",
+        //             "token" => "0x6baad3fe5d0fd4be604420e728adbd68d67e119e",
+        //             "transferHash" => "0x5464cdff35448314e178b8677ea41e670ea0f2533f4e52bfbd4e4a6cfcdef4c2",
+        //             "value" => "100"
+        //         }
+        //     )
+        //
+        $currency = $this->safe_currency($code);
+        return $this->parse_transactions($response, $currency, $since, $limit);
+    }
+
+    public function fetch_withdrawals(?string $code = null, ?int $since = null, ?int $limit = null, $params = array ()): array {
+        /**
+         * fetch all withdrawals made to an account
+         * @param {string} $code unified $currency $code
+         * @param {int} [$since] the earliest time in ms to fetch withdrawals for
+         * @param {int} [$limit] the maximum number of transaction structures to retrieve
+         * @param {array} [$params] extra parameters specific to the exchange API endpoint
+         * @return {array[]} a list of ~@link https://docs.ccxt.com/#/?id=transaction-structure transaction structures~
+         */
+        $address = $this->safe_string($params, 'address');
+        $params = $this->omit($params, 'address');
+        if ($address === null) {
+            throw new ArgumentsRequired($this->id . ' fetchDeposits() requires an $address parameter');
+        }
+        $request = array(
+            'address' => $address,
+        );
+        $response = $this->managerGetWithdrawals (array_merge($request, $params));
+        //
+        //     array(
+        //         {
+        //             "from" => "0x1134cc86b45039cc211c6d1d2e4b3c77f60207ed",
+        //             "timestamp" => "2022-01-01T00:00:00Z",
+        //             "to" => "0x1134cc86b45039cc211c6d1d2e4b3c77f60207ed",
+        //             "token" => "0x6baad3fe5d0fd4be604420e728adbd68d67e119e",
+        //             "transferHash" => "0x5464cdff35448314e178b8677ea41e670ea0f2533f4e52bfbd4e4a6cfcdef4c2",
+        //             "value" => "100"
+        //         }
+        //     )
+        //
+        $currency = $this->safe_currency($code);
+        return $this->parse_transactions($response, $currency, $since, $limit);
+    }
+
+    public function get_currency_by_address($address) {
+        $currencies = $this->currencies;
+        for ($i = 0; $i < count($currencies); $i++) {
+            $currency = $currencies[$i];
+            $info = $this->safe_value($currency, 'info', array());
+            $a = $this->safe_string($info, 'address');
+            if ($a === $address) {
+                return $currency;
+            }
+        }
+        return null;
+    }
+
+    public function parse_transaction($transaction, ?array $currency = null): array {
+        //
+        //     {
+        //         "from" => "0x1134cc86b45039cc211c6d1d2e4b3c77f60207ed",
+        //         "timestamp" => "2022-01-01T00:00:00Z",
+        //         "to" => "0x1134cc86b45039cc211c6d1d2e4b3c77f60207ed",
+        //         "token" => "0x6baad3fe5d0fd4be604420e728adbd68d67e119e",
+        //         "transferHash" => "0x5464cdff35448314e178b8677ea41e670ea0f2533f4e52bfbd4e4a6cfcdef4c2",
+        //         "value" => "100"
+        //     }
+        //
+        $datetime = $this->safe_string($transaction, 'timestamp');
+        $currencyAddresss = $this->safe_string($transaction, 'token', '');
+        $currency = $this->get_currency_by_address($currencyAddresss);
+        return array(
+            'info' => $transaction,
+            'id' => $this->safe_string($transaction, 'transferHash'),
+            'txid' => $this->safe_string($transaction, 'txid'),
+            'timestamp' => $this->parse8601($datetime),
+            'datetime' => $datetime,
+            'network' => null,
+            'address' => null,
+            'addressTo' => $this->safe_string($transaction, 'to'),
+            'addressFrom' => $this->safe_string($transaction, 'from'),
+            'tag' => null,
+            'tagTo' => null,
+            'tagFrom' => null,
+            'type' => null,
+            'amount' => $this->safe_number($transaction, 'value'),
+            'currency' => $this->safe_currency_code(null, $currency),
+            'status' => 'ok',
+            'updated' => null,
+            'internal' => null,
+            'comment' => null,
+            'fee' => null,
+        );
+    }
+
+    public function fetch_tickers(?array $symbols = null, $params = array ()): array {
+        /**
+         * fetches price tickers for multiple markets, statistical information calculated over the past 24 hours for each market
+         * @param {string[]|null} $symbols unified $symbols of the markets to fetch the ticker for, all market tickers are returned if not assigned
+         * @param {array} [$params] extra parameters specific to the exchange API endpoint
+         * @return {array} a dictionary of ~@link https://docs.ccxt.com/#/?id=ticker-structure ticker structures~
          */
         $this->load_markets();
         $period = $this->safe_string($this->options['fetchTickers'], 'period', '1d');
@@ -347,12 +486,12 @@ class timex extends Exchange {
         return $this->parse_tickers($response, $symbols);
     }
 
-    public function fetch_ticker($symbol, $params = array ()) {
+    public function fetch_ticker(string $symbol, $params = array ()): array {
         /**
          * fetches a price $ticker, a statistical calculation with the information calculated over the past 24 hours for a specific $market
-         * @param {str} $symbol unified $symbol of the $market to fetch the $ticker for
-         * @param {dict} $params extra parameters specific to the timex api endpoint
-         * @return {dict} a {@link https://docs.ccxt.com/en/latest/manual.html#$ticker-structure $ticker structure}
+         * @param {string} $symbol unified $symbol of the $market to fetch the $ticker for
+         * @param {array} [$params] extra parameters specific to the exchange API endpoint
+         * @return {array} a ~@link https://docs.ccxt.com/#/?id=$ticker-structure $ticker structure~
          */
         $this->load_markets();
         $market = $this->market($symbol);
@@ -383,13 +522,13 @@ class timex extends Exchange {
         return $this->parse_ticker($ticker, $market);
     }
 
-    public function fetch_order_book($symbol, $limit = null, $params = array ()) {
+    public function fetch_order_book(string $symbol, ?int $limit = null, $params = array ()): array {
         /**
          * fetches information on open orders with bid (buy) and ask (sell) prices, volumes and other data
-         * @param {str} $symbol unified $symbol of the $market to fetch the order book for
-         * @param {int|null} $limit the maximum amount of order book entries to return
-         * @param {dict} $params extra parameters specific to the timex api endpoint
-         * @return {dict} A dictionary of {@link https://docs.ccxt.com/en/latest/manual.html#order-book-structure order book structures} indexed by $market symbols
+         * @param {string} $symbol unified $symbol of the $market to fetch the order book for
+         * @param {int} [$limit] the maximum amount of order book entries to return
+         * @param {array} [$params] extra parameters specific to the exchange API endpoint
+         * @return {array} A dictionary of ~@link https://docs.ccxt.com/#/?id=order-book-structure order book structures~ indexed by $market symbols
          */
         $this->load_markets();
         $market = $this->market($symbol);
@@ -428,14 +567,14 @@ class timex extends Exchange {
         return $this->parse_order_book($response, $symbol, $timestamp, 'bid', 'ask', 'price', 'baseTokenAmount');
     }
 
-    public function fetch_trades($symbol, $since = null, $limit = null, $params = array ()) {
+    public function fetch_trades(string $symbol, ?int $since = null, ?int $limit = null, $params = array ()): array {
         /**
          * get the list of most recent trades for a particular $symbol
-         * @param {str} $symbol unified $symbol of the $market to fetch trades for
-         * @param {int|null} $since timestamp in ms of the earliest trade to fetch
-         * @param {int|null} $limit the maximum amount of trades to fetch
-         * @param {dict} $params extra parameters specific to the timex api endpoint
-         * @return {[dict]} a list of ~@link https://docs.ccxt.com/en/latest/manual.html?#public-trades trade structures~
+         * @param {string} $symbol unified $symbol of the $market to fetch trades for
+         * @param {int} [$since] timestamp in ms of the earliest trade to fetch
+         * @param {int} [$limit] the maximum amount of trades to fetch
+         * @param {array} [$params] extra parameters specific to the exchange API endpoint
+         * @return {Trade[]} a list of ~@link https://docs.ccxt.com/#/?id=public-trades trade structures~
          */
         $this->load_markets();
         $market = $this->market($symbol);
@@ -474,35 +613,34 @@ class timex extends Exchange {
         return $this->parse_trades($response, $market, $since, $limit);
     }
 
-    public function fetch_ohlcv($symbol, $timeframe = '1m', $since = null, $limit = null, $params = array ()) {
+    public function fetch_ohlcv(string $symbol, $timeframe = '1m', ?int $since = null, ?int $limit = null, $params = array ()): array {
         /**
          * fetches historical candlestick data containing the open, high, low, and close price, and the volume of a $market
-         * @param {str} $symbol unified $symbol of the $market to fetch OHLCV data for
-         * @param {str} $timeframe the length of time each candle represents
-         * @param {int|null} $since timestamp in ms of the earliest candle to fetch
-         * @param {int|null} $limit the maximum amount of candles to fetch
-         * @param {dict} $params extra parameters specific to the timex api endpoint
-         * @return {[[int]]} A list of candles ordered as timestamp, open, high, low, close, volume
+         * @param {string} $symbol unified $symbol of the $market to fetch OHLCV data for
+         * @param {string} $timeframe the length of time each candle represents
+         * @param {int} [$since] timestamp in ms of the earliest candle to fetch
+         * @param {int} [$limit] the maximum amount of candles to fetch
+         * @param {array} [$params] extra parameters specific to the exchange API endpoint
+         * @return {int[][]} A list of candles ordered, open, high, low, close, volume
          */
         $this->load_markets();
         $market = $this->market($symbol);
         $request = array(
             'market' => $market['id'],
-            'period' => $this->timeframes[$timeframe],
+            'period' => $this->safe_string($this->timeframes, $timeframe, $timeframe),
         );
         // if $since and $limit are not specified
         $duration = $this->parse_timeframe($timeframe);
+        if ($limit === null) {
+            $limit = 1000; // exchange provides tens of thousands of data, but we set generous default value
+        }
         if ($since !== null) {
             $request['from'] = $this->iso8601($since);
-            if ($limit !== null) {
-                $request['till'] = $this->iso8601($this->sum($since, $this->sum($limit, 1) * $duration * 1000));
-            }
-        } elseif ($limit !== null) {
+            $request['till'] = $this->iso8601($this->sum($since, $this->sum($limit, 1) * $duration * 1000));
+        } else {
             $now = $this->milliseconds();
             $request['till'] = $this->iso8601($now);
             $request['from'] = $this->iso8601($now - $limit * $duration * 1000 - 1);
-        } else {
-            $request['till'] = $this->iso8601($this->milliseconds());
         }
         $response = $this->publicGetCandles (array_merge($request, $params));
         //
@@ -521,7 +659,7 @@ class timex extends Exchange {
         return $this->parse_ohlcvs($response, $market, $timeframe, $since, $limit);
     }
 
-    public function parse_balance($response) {
+    public function parse_balance($response): array {
         $result = array(
             'info' => $response,
             'timestamp' => null,
@@ -539,11 +677,11 @@ class timex extends Exchange {
         return $this->safe_balance($result);
     }
 
-    public function fetch_balance($params = array ()) {
+    public function fetch_balance($params = array ()): array {
         /**
          * query for balance and get the amount of funds available for trading or funds locked in orders
-         * @param {dict} $params extra parameters specific to the timex api endpoint
-         * @return {dict} a ~@link https://docs.ccxt.com/en/latest/manual.html?#balance-structure balance structure~
+         * @param {array} [$params] extra parameters specific to the exchange API endpoint
+         * @return {array} a ~@link https://docs.ccxt.com/#/?id=balance-structure balance structure~
          */
         $this->load_markets();
         $response = $this->tradingGetBalances ($params);
@@ -559,16 +697,16 @@ class timex extends Exchange {
         return $this->parse_balance($response);
     }
 
-    public function create_order($symbol, $type, $side, $amount, $price = null, $params = array ()) {
+    public function create_order(string $symbol, string $type, string $side, $amount, $price = null, $params = array ()) {
         /**
          * create a trade $order
-         * @param {str} $symbol unified $symbol of the $market to create an $order in
-         * @param {str} $type 'market' or 'limit'
-         * @param {str} $side 'buy' or 'sell'
+         * @param {string} $symbol unified $symbol of the $market to create an $order in
+         * @param {string} $type 'market' or 'limit'
+         * @param {string} $side 'buy' or 'sell'
          * @param {float} $amount how much of currency you want to trade in units of base currency
-         * @param {float|null} $price the $price at which the $order is to be fullfilled, in units of the quote currency, ignored in $market $orders
-         * @param {dict} $params extra parameters specific to the timex api endpoint
-         * @return {dict} an {@link https://docs.ccxt.com/en/latest/manual.html#$order-structure $order structure}
+         * @param {float} [$price] the $price at which the $order is to be fullfilled, in units of the quote currency, ignored in $market $orders
+         * @param {array} [$params] extra parameters specific to the exchange API endpoint
+         * @return {array} an ~@link https://docs.ccxt.com/#/?id=$order-structure $order structure~
          */
         $this->load_markets();
         $market = $this->market($symbol);
@@ -632,7 +770,7 @@ class timex extends Exchange {
         return $this->parse_order($order, $market);
     }
 
-    public function edit_order($id, $symbol, $type, $side, $amount = null, $price = null, $params = array ()) {
+    public function edit_order(string $id, $symbol, $type, $side, $amount = null, $price = null, $params = array ()) {
         $this->load_markets();
         $market = $this->market($symbol);
         $request = array(
@@ -673,10 +811,10 @@ class timex extends Exchange {
         if (is_array($response) && array_key_exists('unchangedOrders', $response)) {
             $orderIds = $this->safe_value($response, 'unchangedOrders', array());
             $orderId = $this->safe_string($orderIds, 0);
-            return array(
+            return $this->safe_order(array(
                 'id' => $orderId,
                 'info' => $response,
-            );
+            ));
         }
         $orders = $this->safe_value($response, 'changedOrders', array());
         $firstOrder = $this->safe_value($orders, 0, array());
@@ -684,25 +822,25 @@ class timex extends Exchange {
         return $this->parse_order($order, $market);
     }
 
-    public function cancel_order($id, $symbol = null, $params = array ()) {
+    public function cancel_order(string $id, ?string $symbol = null, $params = array ()) {
         /**
          * cancels an open order
-         * @param {str} $id order $id
-         * @param {str|null} $symbol not used by timex cancelOrder ()
-         * @param {dict} $params extra parameters specific to the timex api endpoint
-         * @return {dict} An {@link https://docs.ccxt.com/en/latest/manual.html#order-structure order structure}
+         * @param {string} $id order $id
+         * @param {string} $symbol not used by timex cancelOrder ()
+         * @param {array} [$params] extra parameters specific to the exchange API endpoint
+         * @return {array} An ~@link https://docs.ccxt.com/#/?$id=order-structure order structure~
          */
         $this->load_markets();
         return $this->cancel_orders(array( $id ), $symbol, $params);
     }
 
-    public function cancel_orders($ids, $symbol = null, $params = array ()) {
+    public function cancel_orders($ids, ?string $symbol = null, $params = array ()) {
         /**
          * cancel multiple orders
-         * @param {[str]} $ids order $ids
-         * @param {str|null} $symbol unified market $symbol, default is null
-         * @param {dict} $params extra parameters specific to the timex api endpoint
-         * @return {dict} an list of {@link https://docs.ccxt.com/en/latest/manual.html#order-structure order structures}
+         * @param {string[]} $ids order $ids
+         * @param {string} $symbol unified market $symbol, default is null
+         * @param {array} [$params] extra parameters specific to the exchange API endpoint
+         * @return {array} an list of ~@link https://docs.ccxt.com/#/?id=order-structure order structures~
          */
         $this->load_markets();
         $request = array(
@@ -736,12 +874,12 @@ class timex extends Exchange {
         return $response;
     }
 
-    public function fetch_order($id, $symbol = null, $params = array ()) {
+    public function fetch_order(string $id, ?string $symbol = null, $params = array ()) {
         /**
          * fetches information on an $order made by the user
-         * @param {str|null} $symbol not used by timex fetchOrder
-         * @param {dict} $params extra parameters specific to the timex api endpoint
-         * @return {dict} An {@link https://docs.ccxt.com/en/latest/manual.html#$order-structure $order structure}
+         * @param {string} $symbol not used by timex fetchOrder
+         * @param {array} [$params] extra parameters specific to the exchange API endpoint
+         * @return {array} An ~@link https://docs.ccxt.com/#/?$id=$order-structure $order structure~
          */
         $this->load_markets();
         $request = array(
@@ -786,14 +924,14 @@ class timex extends Exchange {
         return $this->parse_order(array_merge($order, array( 'trades' => $trades )));
     }
 
-    public function fetch_open_orders($symbol = null, $since = null, $limit = null, $params = array ()) {
+    public function fetch_open_orders(?string $symbol = null, ?int $since = null, ?int $limit = null, $params = array ()): array {
         /**
          * fetch all unfilled currently open $orders
-         * @param {str|null} $symbol unified $market $symbol
-         * @param {int|null} $since the earliest time in ms to fetch open $orders for
-         * @param {int|null} $limit the maximum number of  open $orders structures to retrieve
-         * @param {dict} $params extra parameters specific to the timex api endpoint
-         * @return {[dict]} a list of {@link https://docs.ccxt.com/en/latest/manual.html#order-structure order structures}
+         * @param {string} $symbol unified $market $symbol
+         * @param {int} [$since] the earliest time in ms to fetch open $orders for
+         * @param {int} [$limit] the maximum number of  open $orders structures to retrieve
+         * @param {array} [$params] extra parameters specific to the exchange API endpoint
+         * @return {Order[]} a list of ~@link https://docs.ccxt.com/#/?id=order-structure order structures~
          */
         $this->load_markets();
         $options = $this->safe_value($this->options, 'fetchOpenOrders', array());
@@ -839,14 +977,14 @@ class timex extends Exchange {
         return $this->parse_orders($orders, $market, $since, $limit);
     }
 
-    public function fetch_closed_orders($symbol = null, $since = null, $limit = null, $params = array ()) {
+    public function fetch_closed_orders(?string $symbol = null, ?int $since = null, ?int $limit = null, $params = array ()): array {
         /**
          * fetches information on multiple closed $orders made by the user
-         * @param {str|null} $symbol unified $market $symbol of the $market $orders were made in
-         * @param {int|null} $since the earliest time in ms to fetch $orders for
-         * @param {int|null} $limit the maximum number of  orde structures to retrieve
-         * @param {dict} $params extra parameters specific to the timex api endpoint
-         * @return {[dict]} a list of [order structures]{@link https://docs.ccxt.com/en/latest/manual.html#order-structure
+         * @param {string} $symbol unified $market $symbol of the $market $orders were made in
+         * @param {int} [$since] the earliest time in ms to fetch $orders for
+         * @param {int} [$limit] the maximum number of order structures to retrieve
+         * @param {array} [$params] extra parameters specific to the exchange API endpoint
+         * @return {Order[]} a list of ~@link https://docs.ccxt.com/#/?id=order-structure order structures~
          */
         $this->load_markets();
         $options = $this->safe_value($this->options, 'fetchClosedOrders', array());
@@ -897,14 +1035,14 @@ class timex extends Exchange {
         return $this->parse_orders($orders, $market, $since, $limit);
     }
 
-    public function fetch_my_trades($symbol = null, $since = null, $limit = null, $params = array ()) {
+    public function fetch_my_trades(?string $symbol = null, ?int $since = null, ?int $limit = null, $params = array ()) {
         /**
          * fetch all $trades made by the user
-         * @param {str|null} $symbol unified $market $symbol
-         * @param {int|null} $since the earliest time in ms to fetch $trades for
-         * @param {int|null} $limit the maximum number of $trades structures to retrieve
-         * @param {dict} $params extra parameters specific to the timex api endpoint
-         * @return {[dict]} a list of {@link https://docs.ccxt.com/en/latest/manual.html#trade-structure trade structures}
+         * @param {string} $symbol unified $market $symbol
+         * @param {int} [$since] the earliest time in ms to fetch $trades for
+         * @param {int} [$limit] the maximum number of $trades structures to retrieve
+         * @param {array} [$params] extra parameters specific to the exchange API endpoint
+         * @return {Trade[]} a list of ~@link https://docs.ccxt.com/#/?id=trade-structure trade structures~
          */
         $this->load_markets();
         $options = $this->safe_value($this->options, 'fetchMyTrades', array());
@@ -958,7 +1096,7 @@ class timex extends Exchange {
         return $this->parse_trades($trades, $market, $since, $limit);
     }
 
-    public function parse_trading_fee($fee, $market = null) {
+    public function parse_trading_fee($fee, ?array $market = null) {
         //
         //     {
         //         "fee" => 0.0075,
@@ -975,12 +1113,12 @@ class timex extends Exchange {
         );
     }
 
-    public function fetch_trading_fee($symbol, $params = array ()) {
+    public function fetch_trading_fee(string $symbol, $params = array ()) {
         /**
          * fetch the trading fees for a $market
-         * @param {str} $symbol unified $market $symbol
-         * @param {dict} $params extra parameters specific to the timex api endpoint
-         * @return {dict} a {@link https://docs.ccxt.com/en/latest/manual.html#fee-structure fee structure}
+         * @param {string} $symbol unified $market $symbol
+         * @param {array} [$params] extra parameters specific to the exchange API endpoint
+         * @return {array} a ~@link https://docs.ccxt.com/#/?id=fee-structure fee structure~
          */
         $this->load_markets();
         $market = $this->market($symbol);
@@ -1000,7 +1138,7 @@ class timex extends Exchange {
         return $this->parse_trading_fee($result, $market);
     }
 
-    public function parse_market($market) {
+    public function parse_market($market): array {
         //
         //     {
         //         "symbol" => "ETHBTC",
@@ -1030,7 +1168,7 @@ class timex extends Exchange {
         $minBase = $this->safe_string($market, 'baseMinSize');
         $minAmount = Precise::string_max($amountIncrement, $minBase);
         $priceIncrement = $this->safe_string($market, 'tickSize');
-        $minCost = $this->safe_string($market, 'quoteMinSize');
+        $minCost = $this->safe_number($market, 'quoteMinSize');
         return array(
             'id' => $id,
             'symbol' => $base . '/' . $quote,
@@ -1079,6 +1217,7 @@ class timex extends Exchange {
                     'max' => null,
                 ),
             ),
+            'created' => null,
             'info' => $market,
         );
     }
@@ -1133,7 +1272,7 @@ class timex extends Exchange {
         $tradeDecimals = $this->safe_integer($currency, 'tradeDecimals');
         $fee = null;
         if (($feeString !== null) && ($tradeDecimals !== null)) {
-            $feeStringLen = is_array($feeString) ? count($feeString) : 0;
+            $feeStringLen = count($feeString);
             $dotIndex = $feeStringLen - $tradeDecimals;
             if ($dotIndex > 0) {
                 $whole = mb_substr($feeString, 0, $dotIndex - 0);
@@ -1162,10 +1301,11 @@ class timex extends Exchange {
                 'withdraw' => array( 'min' => $fee, 'max' => null ),
                 'amount' => array( 'min' => null, 'max' => null ),
             ),
+            'networks' => array(),
         );
     }
 
-    public function parse_ticker($ticker, $market = null) {
+    public function parse_ticker($ticker, ?array $market = null): array {
         //
         //     {
         //         "ask" => 0.017,
@@ -1210,7 +1350,7 @@ class timex extends Exchange {
         ), $market);
     }
 
-    public function parse_trade($trade, $market = null) {
+    public function parse_trade($trade, ?array $market = null): array {
         //
         // fetchTrades (public)
         //
@@ -1279,7 +1419,7 @@ class timex extends Exchange {
         );
     }
 
-    public function parse_ohlcv($ohlcv, $market = null) {
+    public function parse_ohlcv($ohlcv, ?array $market = null): array {
         //
         //     {
         //         "timestamp":"2019-12-04T23:00:00",
@@ -1301,7 +1441,7 @@ class timex extends Exchange {
         );
     }
 
-    public function parse_order($order, $market = null) {
+    public function parse_order($order, ?array $market = null): array {
         //
         // fetchOrder, createOrder, cancelOrder, cancelOrders, fetchOpenOrders, fetchClosedOrders
         //
@@ -1332,7 +1472,6 @@ class timex extends Exchange {
         $amount = $this->safe_string($order, 'quantity');
         $filled = $this->safe_string($order, 'filledQuantity');
         $canceledQuantity = $this->omit_zero($this->safe_string($order, 'cancelledQuantity'));
-        $status = null;
         if (Precise::string_equals($filled, $amount)) {
             $status = 'closed';
         } elseif ($canceledQuantity !== null) {
@@ -1356,6 +1495,7 @@ class timex extends Exchange {
             'side' => $side,
             'price' => $price,
             'stopPrice' => null,
+            'triggerPrice' => null,
             'amount' => $amount,
             'cost' => null,
             'average' => null,
@@ -1368,14 +1508,14 @@ class timex extends Exchange {
     }
 
     public function sign($path, $api = 'public', $method = 'GET', $params = array (), $headers = null, $body = null) {
-        $url = $this->urls['api'] . '/' . $api . '/' . $path;
+        $url = $this->urls['api']['rest'] . '/' . $api . '/' . $path;
         if ($params) {
             $url .= '?' . $this->urlencode_with_array_repeat($params);
         }
         if ($api !== 'public') {
             $this->check_required_credentials();
             $auth = base64_encode($this->apiKey . ':' . $this->secret);
-            $secret = 'Basic ' . $this->decode($auth);
+            $secret = 'Basic ' . $auth;
             $headers = array( 'authorization' => $secret );
         }
         return array( 'url' => $url, 'method' => $method, 'body' => $body, 'headers' => $headers );
@@ -1383,7 +1523,7 @@ class timex extends Exchange {
 
     public function handle_errors($statusCode, $statusText, $url, $method, $responseHeaders, $responseBody, $response, $requestHeaders, $requestBody) {
         if ($response === null) {
-            return;
+            return null;
         }
         if ($statusCode >= 400) {
             //
@@ -1402,5 +1542,6 @@ class timex extends Exchange {
             $this->throw_exactly_matched_exception($this->exceptions['exact'], $message, $feedback);
             throw new ExchangeError($feedback);
         }
+        return null;
     }
 }
